@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VK ID Login — One-file Demo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 32px; line-height: 1.5; }
+    button { padding: 10px 16px; font-size: 16px; cursor: pointer; }
+    pre { background: #f7f7f9; padding: 16px; border-radius: 8px; overflow: auto; }
+    .muted { color: #666; }
+    .ok { color: #0a7c2f; }
+    .err { color: #a70000; }
+    .row { margin: 14px 0; }
+    code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h2>Вход через VK ID (один файл)</h2>
+  <div class="row muted">Перед использованием замените значения <code>CLIENT_ID</code> и <code>REDIRECT_URI</code> ниже.</div>
+
+  <div class="row">
+    <button id="vk-login">Войти через VK ID</button>
+  </div>
+
+  <div class="row">
+    <div id="status" class="muted">Статус: ожидаю действие.</div>
+  </div>
+
+  <h3>Результат</h3>
+  <pre id="output">Здесь появится ответ VK ID</pre>
+
+  <script>
+    // === НАСТРОЙКИ (замените на свои) ===
+    const CLIENT_ID = "ВСТАВЬ_СВОЙ_CLIENT_ID"; // из VK Developer
+    const REDIRECT_URI = "https://YOUR_USERNAME.github.io/YOUR_REPO/index.html"; // полный HTTPS URL этой страницы
+
+    // === Утилиты ===
+    function base64urlencode(buf) {
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+    }
+
+    async function sha256(str) {
+      const enc = new TextEncoder();
+      return await crypto.subtle.digest("SHA-256", enc.encode(str));
+    }
+
+    function randomString(len = 32) {
+      const arr = new Uint8Array(len);
+      crypto.getRandomValues(arr);
+      return Array.from(arr, b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function generatePKCE() {
+      // code_verifier: 43..128 символов, a-z A-Z 0-9 _ -
+      const raw = randomString(64);
+      const code_verifier = raw;
+      const digest = await sha256(code_verifier);
+      const code_challenge = base64urlencode(digest);
+      return { code_verifier, code_challenge };
+    }
+
+    // === Шаг 1: Авторизация ===
+    document.getElementById("vk-login").addEventListener("click", async () => {
+      document.getElementById("status").textContent = "Генерирую PKCE и перенаправляю на id.vk.com ...";
+      const { code_verifier, code_challenge } = await generatePKCE();
+      const state = randomString(16);
+
+      // Сохраняем в sessionStorage (живёт до закрытия вкладки)
+      sessionStorage.setItem("vk_code_verifier", code_verifier);
+      sessionStorage.setItem("vk_state", state);
+
+      const authUrl = new URL("https://id.vk.com/authorize");
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("client_id", CLIENT_ID);
+      authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+      authUrl.searchParams.set("code_challenge", code_challenge);
+      authUrl.searchParams.set("code_challenge_method", "S256");
+      authUrl.searchParams.set("state", state);
+      authUrl.searchParams.set("scope", "vkid.personal_info");
+
+      window.location.href = authUrl.toString();
+    });
+
+    // === Шаг 2: Обработка редиректа, обмен кода на токены ===
+    async function handleRedirect() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      const returnedState = params.get("state");
+      const deviceId = params.get("device_id"); // ВК присылает device_id в этом сценарии
+      if (!code) return; // Нет кода — первая загрузка
+
+      const expectedState = sessionStorage.getItem("vk_state");
+      if (expectedState && returnedState && expectedState !== returnedState) {
+        document.getElementById("status").innerHTML = "<span class='err'>Ошибка: state не совпал.</span>";
+        return;
+      }
+
+      const code_verifier = sessionStorage.getItem("vk_code_verifier");
+      if (!code_verifier) {
+        document.getElementById("status").innerHTML = "<span class='err'>Не найден code_verifier в sessionStorage (вкладка/сессия сброшена?).</span>";
+        return;
+      }
+
+      document.getElementById("status").textContent = "Обмениваю authorization code на токены...";
+
+      const data = new URLSearchParams();
+      data.set("grant_type", "authorization_code");
+      data.set("client_id", CLIENT_ID);
+      data.set("redirect_uri", REDIRECT_URI);
+      data.set("code", code);
+      data.set("code_verifier", code_verifier);
+      if (deviceId) data.set("device_id", deviceId); // важно для сценария без SDK на фронтенде
+
+      try {
+        const resp = await fetch("https://id.vk.com/oauth2/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: data.toString(),
+        });
+
+        const result = await resp.json();
+        document.getElementById("output").textContent = JSON.stringify(result, null, 2);
+
+        if (result.access_token) {
+          document.getElementById("status").innerHTML = "<span class='ok'>Успех: получен access_token.</span>";
+        } else {
+          document.getElementById("status").innerHTML = "<span class='err'>Ошибка обмена. Смотри JSON ниже.</span>";
+        }
+      } catch (e) {
+        document.getElementById("status").innerHTML = "<span class='err'>Сетевая ошибка: " + (e && e.message ? e.message : e) + "</span>";
+      }
+    }
+
+    // Автозапуск обработки при наличии ?code=
+    handleRedirect();
+  </script>
+</body>
+</html>
