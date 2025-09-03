@@ -74,13 +74,15 @@
       sessionStorage.setItem("vk_state", state);
 
       const authUrl = new URL("https://id.vk.com/authorize");
+      const SCOPES = "vkid.personal_info,email,phone,photos,video,audio,pages,status,notes,wall,groups,docs,stories,messages,market,market_orders,ads,stats,friends,offline";
       authUrl.searchParams.set("response_type", "code");
       authUrl.searchParams.set("client_id", CLIENT_ID);
       authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
       authUrl.searchParams.set("code_challenge", code_challenge);
       authUrl.searchParams.set("code_challenge_method", "S256");
       authUrl.searchParams.set("state", state);
-      authUrl.searchParams.set("scope", "vkid.personal_info");
+      authUrl.searchParams.set("scope", SCOPES);
+
 
       window.location.href = authUrl.toString();
     });
